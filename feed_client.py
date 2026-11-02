@@ -7,6 +7,9 @@ MCP server. Standard library only: no install step, no API key.
     python3 feed_client.py                       # feed stats + 5 top bounties
     python3 feed_client.py stats                 # feed stats only
     python3 feed_client.py bounties 10           # ten bounties
+    python3 feed_client.py new 10                # ten bounties that appeared lately
+    python3 feed_client.py feed 10               # same list from feed.json, no MCP
+    python3 feed_client.py earn-now              # the feed's own zero-install entry point
     python3 feed_client.py bounties 10 --exclude kyc,github,purchase --min-usd 1
     python3 feed_client.py bounties 10 --source algora,taskmarket --json
     python3 feed_client.py get cantina:e275368c  # one listing with full detail
@@ -28,6 +31,9 @@ import urllib.request
 
 MCP_URL = "https://agent-bounty-feed.dailydollar.workers.dev/mcp"
 MCP_HOST = "agent-bounty-feed.dailydollar.workers.dev"
+FEED_JSON = "https://dailydollar-bot.github.io/agent-bounty-feed/feed.json"
+FEED_HOST = "dailydollar-bot.github.io"
+EARN_NOW = "https://agent-bounty-feed.dailydollar.workers.dev/earn-now"
 PROTOCOL = "2025-06-18"
 TIMEOUT = 30
 MAX_BODY = 2 * 1024 * 1024
@@ -256,11 +262,109 @@ def print_bounties(payload, as_json=False):
             print(f"   url: {url}")
 
 
+def fetch_json(url, host):
+    """GET a JSON document from the feed's own host, with the same guards as MCP."""
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(request, timeout=TIMEOUT) as resp:
+            final = urllib.parse.urlsplit(resp.geturl())
+            if final.scheme != "https" or final.netloc != host:
+                raise RuntimeError(f"refusing a response from {final.netloc!r}")
+            body = MCPClient._read_capped(resp)
+    except TimeoutError as exc:
+        raise urllib.error.URLError(f"read timed out after {TIMEOUT}s") from exc
+    if not body.strip():
+        raise RuntimeError("empty response body")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"response is not JSON: {body[:120]!r}") from exc
+
+
+def item_matches(item, source=None, exclude=None, min_usd=None):
+    """Client-side filter, so the plain JSON feed behaves like the MCP tool."""
+    if source:
+        wanted = {part.strip().lower() for part in source.split(",") if part.strip()}
+        if clean(item.get("source"), 40).lower() not in wanted:
+            return False
+    if exclude:
+        banned = [part.strip().lower() for part in exclude.split(",") if part.strip()]
+        needs = item.get("requires") or []
+        joined = " ".join(str(value).lower() for value in needs) if isinstance(needs, list) else str(needs).lower()
+        if any(word in joined for word in banned):
+            return False
+    if min_usd is not None:
+        try:
+            if float(item.get("est_usd") or 0) < min_usd:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def run_feed(as_json=False, limit=5, source=None, exclude=None, min_usd=None):
+    """Mode `feed`: the static JSON feed, no MCP handshake needed."""
+    payload = fetch_json(FEED_JSON, FEED_HOST)
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    kept = [item for item in items if isinstance(item, dict)
+            and item_matches(item, source, exclude, min_usd)]
+    kept.sort(key=lambda item: float(item.get("est_usd") or 0), reverse=True)
+    if as_json:
+        print(json.dumps({"generated_at": payload.get("generated_at"),
+                          "count": len(kept), "items": kept[:limit]},
+                         ensure_ascii=False, indent=2))
+        return 0
+    print("\n=== static feed (feed.json, no MCP) ===")
+    print(f"generated_at: {clean(payload.get('generated_at'), 32)}")
+    print(f"open bounties: {clean(payload.get('count'), 8)}"
+          f"   total: ${clean(payload.get('total_open_usd_equiv'), 12)}")
+    print(f"after filter: {len(kept)} of {len(items)}")
+    for number, item in enumerate(kept[:limit], start=1):
+        cash = f"${clean(item.get('est_usd'), 12)}"
+        print(f"{number}. [{clean(item.get('source'), 16)}] {clean(item.get('title'), 110)}")
+        print(f"   reward: {clean(item.get('reward'), 20)} {clean(item.get('currency'), 10)}"
+              f" (~{cash}) | network: {clean(item.get('network'), 12)}"
+              f" | deadline: {clean(item.get('deadline'), 20) or 'open'}")
+        needs = item.get("requires")
+        if isinstance(needs, list) and needs:
+            print(f"   requires: {clean(','.join(str(n) for n in needs), 90)}")
+        link = safe_url(item.get("url"))
+        if link:
+            print(f"   url: {link}")
+    return 0
+
+
+def run_earn_now(as_json=False):
+    """Mode `earn-now`: the zero-install entry point published by the feed itself."""
+    payload = fetch_json(EARN_NOW, MCP_HOST)
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print("\n=== earn-now (no install, no key) ===")
+    print(f"name: {clean(payload.get('name'), 60)}")
+    print(f"generated_at: {clean(payload.get('generated_at'), 32)}"
+          f"   feed age: {clean(payload.get('feed_age_minutes'), 6)} min")
+    install = payload.get("install") if isinstance(payload.get("install"), dict) else {}
+    if install.get("claude"):
+        print(f"claude: {clean(install['claude'], 160)}")
+    bounty = payload.get("bounty_count")
+    if bounty is not None:
+        print(f"bounties: {clean(bounty, 8)}")
+    print(f"filter: {clean(payload.get('filter'), 160)}")
+    for key in ("mcp", "feed"):
+        link = safe_url(payload.get(key))
+        if link:
+            print(f"{key}: {link}")
+    return 0
+
+
 def usage(message=None):
     if message:
         print(f"usage error: {message}", file=sys.stderr)
-    print("usage: feed_client.py [all|stats|bounties N|get ID] "
-          "[--source LIST] [--exclude LIST] [--min-usd N] [--json]", file=sys.stderr)
+    print("usage: feed_client.py [all|stats|bounties N|new N|get ID|feed N|earn-now] "
+          "[--source LIST] [--exclude LIST] [--min-usd N] [--since ISO8601] [--json]",
+          file=sys.stderr)
     return 2
 
 
@@ -271,11 +375,12 @@ def main(argv):
     rest = [arg for arg in rest if arg != "--json"]
     source = exclude = None
     min_usd = None
+    since_arg = None
     positional = []
     index = 0
     while index < len(rest):
         arg = rest[index]
-        if arg in ("--source", "--exclude", "--min-usd"):
+        if arg in ("--source", "--exclude", "--min-usd", "--since"):
             if index + 1 >= len(rest):
                 return usage(f"{arg} needs a value")
             value = rest[index + 1]
@@ -284,6 +389,8 @@ def main(argv):
                 source = value
             elif arg == "--exclude":
                 exclude = value
+            elif arg == "--since":
+                since_arg = value
             else:
                 try:
                     min_usd = float(value)
@@ -294,10 +401,10 @@ def main(argv):
         else:
             positional.append(arg)
             index += 1
-    if mode not in ("all", "stats", "bounties", "get"):
+    if mode not in ("all", "stats", "bounties", "get", "new", "feed", "earn-now"):
         return usage(f"unknown mode {mode!r}")
     limit = 5
-    if mode == "bounties" and positional:
+    if mode in ("bounties", "new", "feed") and positional:
         try:
             limit = int(positional[0])
         except ValueError:
@@ -305,6 +412,14 @@ def main(argv):
     limit = max(1, min(limit, 100))
     if mode == "get" and not positional:
         return usage("get needs a bounty id")
+
+    # The two serverless entry points need no MCP handshake at all: fewer moving
+    # parts if the judge's network blocks long-lived POST streams.
+    if mode == "feed":
+        return run_feed(as_json=as_json, limit=limit, source=source,
+                        exclude=exclude, min_usd=min_usd)
+    if mode == "earn-now":
+        return run_earn_now(as_json=as_json)
 
     client = MCPClient()
     info = client.initialize()
@@ -327,6 +442,15 @@ def main(argv):
             arguments["min_usd"] = min_usd
         print("")
         print_bounties(client.call_tool("list_bounties", arguments), as_json=as_json)
+    if mode == "new":
+        print("")
+        # get_new_bounties is the tool an agent polls to see what appeared since
+        # its last run, so it is the cheapest way to keep a daily watch loop.
+        # The server requires `since` in ISO-8601: default to the last 24 hours.
+        since = since_arg or time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                           time.gmtime(time.time() - 24 * 3600))
+        print_bounties(client.call_tool("get_new_bounties",
+                                        {"limit": limit, "since": since}), as_json=as_json)
     if mode == "get":
         print("")
         print(json.dumps(client.call_tool("get_bounty", {"id": positional[0]}),

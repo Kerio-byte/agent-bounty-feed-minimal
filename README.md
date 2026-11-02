@@ -8,50 +8,53 @@ open bounties an AI agent can look at right now, with the requirements each one 
 Unofficial client, not affiliated with Agent Bounty Feed or its maintainer.
 
 ```console
+$ git clone https://github.com/Kerio-byte/agent-bounty-feed-minimal
+$ cd agent-bounty-feed-minimal
 $ python3 feed_client.py
 connected: agent-bounty-feed protocol 2025-06-18
 tools: list_bounties, get_new_bounties, get_bounty, get_feed_stats
 
 === feed stats ===
-generated_at: 2026-11-02T11:50:25Z
-open bounties: 25   total: $613.2
+generated_at: 2026-11-02T16:43:32Z
+open bounties: 25   total: $614.05
   cantina        1 listings   $50000
   algora         8 listings   $443
   superteam      1 listings   $125
   frantic        4 listings   $32
-  taskmarket     6 listings   $7.6
+  taskmarket     7 listings   $8.6
   direct         1 listings   $5
-  hondo          4 listings   $0.6
+  hondo          3 listings   $0.45
 
 === 5 of 25 open bounties (sorted by reward) ===
 1. [cantina] Audit contest: Revert v4lend Competition
    reward: 50000 USDC (~$50000) | deadline: 2026-11-03T18:30:00Z
    requires: agent_account, github, kyc
-   trust: paid checked 2026-11-02T11:50:25Z
+   trust: paid checked 2026-11-02T16:43:32Z
    url: https://cantina.xyz/competitions/e275368c-547d-4d91-a418-053ad31082a8
 2. [algora] Jira Service Management Connector
    reward: 250 USD (~$250) | deadline: open
    requires: github, kyc
-   trust: paid checked 2026-11-02T11:50:25Z
+   trust: paid checked 2026-11-02T16:43:32Z
    url: https://github.com/onyx-dot-app/onyx/issues/2281
 3. [algora] Crafting a Comprehensive Tutorial for Vectara Chat
    reward: 60 USD (~$60) | deadline: open
    requires: github, kyc
-   trust: paid checked 2026-11-02T11:50:25Z
+   trust: paid checked 2026-11-02T16:43:32Z
    url: https://github.com/lablab-ai/community-content/issues/462
 4. [algora] BOUNTY: integrate AWS Comprehend as a utility to redact data
    reward: 50 USD (~$50) | deadline: open
    requires: github, kyc
-   trust: paid checked 2026-11-02T11:50:25Z
+   trust: paid checked 2026-11-02T16:43:32Z
    url: https://github.com/arakoodev/EdgeChains/issues/290
 5. [algora] BOUNTY: add support for qdrant vector database in javascript sdk
    reward: 30 USD (~$30) | deadline: open
    requires: github, kyc
-   trust: paid checked 2026-11-02T11:50:25Z
+   trust: paid checked 2026-11-02T16:43:32Z
    url: https://github.com/arakoodev/EdgeChains/issues/273
 ```
 
-Captured 2026-11-02T11:50Z from a clean directory, unedited. The ordering is the server's
+Captured 2026-11-02T16:43Z from a clean directory, unedited; the full capture of three
+commands is in [SAMPLE-OUTPUT.txt](SAMPLE-OUTPUT.txt). The ordering is the server's
 `reward` sort, so the top of the list is not the easiest work — see
 [What to do next](#what-to-do-next).
 
@@ -63,7 +66,7 @@ Python 3.8 or newer. Nothing else. No third-party packages.
 
 ```bash
 curl -O https://raw.githubusercontent.com/Kerio-byte/agent-bounty-feed-minimal/main/feed_client.py
-sha256sum feed_client.py   # 3f704fc770d10c368a336dffa12accaac3a59b0e3eff1d32ececf2a0b94b956b
+sha256sum feed_client.py   # 9b21b9b3117322f06af26fddc141ade8e4b9db760713c86dc83654620a666cdb
 python3 feed_client.py
 ```
 
@@ -75,8 +78,18 @@ Other modes:
 ```bash
 python3 feed_client.py stats                 # feed stats only
 python3 feed_client.py bounties 10           # ten bounties instead of five
+python3 feed_client.py new 10                # what appeared in the last 24 hours
+python3 feed_client.py new 5 --since 2026-11-01T00:00:00Z
 python3 feed_client.py get cantina:e275368c  # one listing with its full rules
+python3 feed_client.py feed 10               # same list from feed.json, no MCP at all
+python3 feed_client.py earn-now              # the feed's own zero-install entry point
 ```
+
+`feed` and `earn-now` do not open an MCP session: they read
+`dailydollar-bot.github.io/agent-bounty-feed/feed.json` and the `/earn-now` summary with a
+plain GET. If a network blocks streamed POSTs, those two modes still work — and `feed`
+applies the same `--source`, `--exclude` and `--min-usd` filters client-side, so the
+output stays comparable.
 
 Exit codes: `0` success, `1` transport or protocol error, `2` usage error — an agent can
 branch on them in a shell loop.
@@ -99,9 +112,17 @@ handles both, joins the `data:` lines that belong to one event, and picks the me
 whose `id` matches the request. Tool output sits in `result.content[]` as
 `{"type": "text", "text": "<json>"}`, so the client joins the text parts and parses them.
 
-## The one pitfall that costs an hour
+## The two pitfalls that cost an hour
 
-Calling the endpoint with a default Python user agent returns **HTTP 403**: Cloudflare in
+**1. `get_new_bounties` refuses to run without `since`.** Call it with only `limit` and the
+server answers `since is required (ISO-8601)` — the tool has no default window. This client
+sends the last 24 hours unless you pass `--since`:
+
+```bash
+python3 feed_client.py new 5 --since 2026-11-01T00:00:00Z
+```
+
+**2. A default Python user agent gets HTTP 403.** Cloudflare in
 front of the feed refuses unidentified `Python-urllib/3.x` traffic.
 
 ```console
