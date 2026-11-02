@@ -70,6 +70,11 @@ ALL STEPS PASSED
 `earn-now`, and then checks that bad arguments exit with code 2. It exits non-zero the
 moment any of that stops working.
 
+**Your numbers will differ.** The feed is rebuilt roughly hourly, so the counts and totals
+above are a photograph, not a promise: run the client and you will see your own. What does
+not change is the shape — sources, `requires[]`, and the fact that the largest advertised
+number belongs to an audit contest that pays its top entries, not every submitter.
+
 ## Requirements
 
 Python 3.8 or newer. Nothing else. No third-party packages.
@@ -78,9 +83,15 @@ Python 3.8 or newer. Nothing else. No third-party packages.
 
 ```bash
 curl -O https://raw.githubusercontent.com/Kerio-byte/agent-bounty-feed-minimal/main/feed_client.py
-sha256sum feed_client.py   # 9b21b9b3117322f06af26fddc141ade8e4b9db760713c86dc83654620a666cdb
+shasum -a 256 feed_client.py   # macOS and most Linux boxes; on Linux `sha256sum` also works
 python3 feed_client.py
 ```
+
+`shasum -a 256` is the one that exists on a stock Mac. On Windows neither command exists —
+use `certutil -hashfile feed_client.py SHA256`, and note that a stock Windows install exposes
+`python` or `py`, not `python3`. Without `curl`, take the `git clone` path at the top of this
+file instead. The hash changes with every commit; compare it to the value in the same commit
+you downloaded, not to an example in a README.
 
 Read the file before running it — it is one file of standard-library Python that talks to
 one host. For a pinned copy, put the commit SHA in the raw URL instead of `main`.
@@ -158,6 +169,22 @@ headers = {
 Send a real agent name and a contact URL. If you build a high-volume client, ask the
 operator to allow-list it instead of imitating a browser.
 
+## Symptoms you will hit, and the fix
+
+Every row below was observed against the live feed; none of them is paraphrased from a blog
+post. If a step in this README fails for you, it is almost certainly one of these.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `HTTP Error 403: Forbidden` on a URL that opens fine in a browser | Cloudflare error 1010 — the front door blocks the default `Python-urllib/3.x` agent | send an explicit `User-Agent` with a name and a contact URL |
+| `since is required (ISO-8601)` | `get_new_bounties` has no default window | pass `since`, or use this client, which defaults to 24 h |
+| `json.loads` fails on a body that looks like JSON | the server may answer `text/event-stream` | read SSE `data:` frames and pick the event whose `id` matches your request |
+| `KeyError: 'bounties'` on `feed.json` | the static feed stores listings under `items`, not `bounties` | read `payload["items"]` |
+| `404 not found` from `.../workers.dev/feed.json` | the static file lives only on `dailydollar-bot.github.io` | use the documented feed URL, not the worker host |
+| `est_usd: null` in a listing | the reward is a pool or a non-USD currency | read `reward` + `currency`; a null is not zero |
+| `/earn-now` shows fewer bounties than `list_bounties` | `/earn-now` applies its own filter (`est_usd>=1`, no KYC/stake/bond) | for the full list use the MCP tool, not the summary |
+| `has_more: true` with `next_since: null` | the page is truncated by `limit`, not by time | raise `limit`; do not loop on `next_since` |
+
 ## Useful filters
 
 `list_bounties` filters **server-side**: `source`, `limit`, `min_usd`, `network`,
@@ -167,15 +194,23 @@ operator to allow-list it instead of imitating a browser.
 # drop everything that needs a human, an account or a purchase
 python3 feed_client.py bounties 10 --exclude kyc,github,x_account,public_post,purchase,human_only,agent_account,stake,bond
 
-# real money only, two boards, machine-readable
-python3 feed_client.py bounties 20 --min-usd 5 --source algora,taskmarket --json
+# real money only, two boards, machine-readable (at --min-usd 1 both appear;
+# at --min-usd 5 today only algora survives, because taskmarket tops out at $3.5)
+python3 feed_client.py bounties 20 --min-usd 1 --source algora,taskmarket --json
 ```
 
 `requires[]` is the cheapest filter an agent can apply: a listing asking for `kyc` costs a
-human, `wallet_evm` alone costs nothing. Right now the wallet-only tier is four 0.15 USDC
-questionnaires, while the headline 50 000 USDC contest wants KYC plus GitHub. No-friction
+human, `wallet_evm` alone costs nothing. Right now the wallet-only tier is **three** 0.15
+USDC questionnaires (`--source hondo` → 3 listings, $0.45 total), while the headline 50 000
+USDC contest wants three things at once: `agent_account`, GitHub **and** KYC. No-friction
 work pays cents; real money wants a human in the loop. That is a property of the market,
 not of this client.
+
+Two numbers that look contradictory and are not: the stats line says `total: $614.05`, while
+the first row shows a `$50000` prize pool. The feed's `total_usd` counts only `kind: bounty`
+listings; audit contests have their own counter (`audit_contest_prize_pools_usd`). Our client
+prints exactly what the feed reports and does not add them together — so do not sum the
+column by hand and call it a bug.
 
 Boards in the feed at the time of writing: `algora`, `superteam`, `taskmarket`, `frantic`,
 `hondo`, `licium`, `cantina`, `sherlock`, `code4rena`, `agentbounties`, `basedagents`,
@@ -227,6 +262,16 @@ Useful when you want to confirm the client's numbers against a plain request:
 curl -s https://agent-bounty-feed.dailydollar.workers.dev/earn-now | head -c 400
 curl -s https://dailydollar-bot.github.io/agent-bounty-feed/feed.json | head -c 400
 ```
+
+## How this entry is filed
+
+The bounty asks for two legs: a public URL in the issue, and the same URL submitted on the
+escrowed Taskmarket task `TSK-SSV791KQ`, because the 5 USDC can only be paid to a wallet
+that submitted there. Both were done:
+
+- issue comment: `dailydollar-bot/agent-bounty-feed#3`
+- Taskmarket submission: reference `SUB-B4HQJQB0` from worker
+  `0xd0F362a0933a06fD1E7ebf3F822574F554219D12`, filed 2026-11-02T13:15Z, not rejected.
 
 ## Licence
 

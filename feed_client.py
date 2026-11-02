@@ -295,6 +295,13 @@ def item_matches(item, source=None, exclude=None, min_usd=None):
         if any(word in joined for word in banned):
             return False
     if min_usd is not None:
+        # The server drops prize pools whose per-worker payout is unknown (a
+        # ranked-prize pool pays the top N, not every submitter). Match that
+        # exactly, otherwise `feed --min-usd 5` and `bounties --min-usd 5`
+        # disagree on the same data.
+        basis = clean(item.get("reward_basis"), 24).lower()
+        if basis in ("ranked_prizes", "shared_pool"):
+            return False
         try:
             if float(item.get("est_usd") or 0) < min_usd:
                 return False
@@ -325,7 +332,7 @@ def run_feed(as_json=False, limit=5, source=None, exclude=None, min_usd=None):
         print(f"{number}. [{clean(item.get('source'), 16)}] {clean(item.get('title'), 110)}")
         print(f"   reward: {clean(item.get('reward'), 20)} {clean(item.get('currency'), 10)}"
               f" (~{cash}) | network: {clean(item.get('network'), 12)}"
-              f" | deadline: {clean(item.get('deadline'), 20) or 'open'}")
+            f" | deadline: {clean(item.get('deadline'), 32) or 'open'}")
         needs = item.get("requires")
         if isinstance(needs, list) and needs:
             print(f"   requires: {clean(','.join(str(n) for n in needs), 90)}")
@@ -369,8 +376,15 @@ def usage(message=None):
 
 
 def main(argv):
-    mode = argv[1] if len(argv) > 1 else "all"
-    rest = argv[2:]
+    # A flag may come before the mode (`feed_client.py --json`), which is the
+    # obvious typo a reader makes. Treat it as the default mode + that flag
+    # instead of failing with "unknown mode".
+    if len(argv) > 1 and argv[1].startswith("--"):
+        mode = "all"
+        rest = argv[1:]
+    else:
+        mode = argv[1] if len(argv) > 1 else "all"
+        rest = argv[2:]
     as_json = "--json" in rest
     rest = [arg for arg in rest if arg != "--json"]
     source = exclude = None
@@ -429,9 +443,12 @@ def main(argv):
               f"protocol {clean(info.get('protocolVersion'), 20)}")
         names = [clean(tool.get("name"), 32) for tool in client.tools() if isinstance(tool, dict)]
         print("tools:", ", ".join(names))
+    stats_result = bounties_result = None
     if mode in ("all", "stats"):
-        print("\n=== feed stats ===")
-        print_stats(client.call_tool("get_feed_stats"), as_json=as_json)
+        stats_result = client.call_tool("get_feed_stats")
+        if not as_json:
+            print("\n=== feed stats ===")
+            print_stats(stats_result)
     if mode in ("all", "bounties"):
         arguments = {"limit": limit}
         if source:
@@ -440,8 +457,19 @@ def main(argv):
             arguments["exclude_requires"] = exclude
         if min_usd is not None:
             arguments["min_usd"] = min_usd
-        print("")
-        print_bounties(client.call_tool("list_bounties", arguments), as_json=as_json)
+        bounties_result = client.call_tool("list_bounties", arguments)
+        if not as_json:
+            print("")
+            print_bounties(bounties_result)
+    # --json must produce exactly one parseable document, never a header line
+    # or two concatenated objects, whatever mode was asked for.
+    if as_json and mode == "all":
+        print(json.dumps({"stats": stats_result, "bounties": bounties_result},
+                         ensure_ascii=False, indent=2))
+    elif as_json and mode == "stats":
+        print_stats(stats_result, as_json=True)
+    elif as_json and mode == "bounties":
+        print_bounties(bounties_result, as_json=True)
     if mode == "new":
         print("")
         # get_new_bounties is the tool an agent polls to see what appeared since
@@ -459,8 +487,18 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # A Windows console defaults to cp1252 and would die on a legitimate feed
+    # title containing "ō". Never let an encoding error kill a read-only run.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # Python < 3.7 or a redirected pipe
+            pass
     try:
         sys.exit(main(sys.argv))
-    except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, ValueError) as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, ValueError,
+            OSError) as exc:
+        # OSError covers socket.timeout on Python 3.8/3.9, where it is not yet
+        # TimeoutError, so the failure still prints one line instead of a trace.
         print(f"FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         sys.exit(1)
