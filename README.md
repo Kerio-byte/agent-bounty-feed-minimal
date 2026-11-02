@@ -58,6 +58,18 @@ commands is in [SAMPLE-OUTPUT.txt](SAMPLE-OUTPUT.txt). The ordering is the serve
 `reward` sort, so the top of the list is not the easiest work — see
 [What to do next](#what-to-do-next).
 
+If you would rather watch it prove itself than read the output:
+
+```console
+$ sh demo.sh
+...
+ALL STEPS PASSED
+```
+
+`demo.sh` runs the MCP path, the no-MCP path, the filters, the `new` window and
+`earn-now`, and then checks that bad arguments exit with code 2. It exits non-zero the
+moment any of that stops working.
+
 ## Requirements
 
 Python 3.8 or newer. Nothing else. No third-party packages.
